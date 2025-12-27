@@ -1,0 +1,44 @@
+[gd_scene load_steps=9 format=3 uid="uid://e3fdy8h24p5"]
+
+[ext_resource type="PackedScene" uid="uid://b3gqjpq5gcrs1" path="res://player.tscn" id="1_gojnm"]
+[ext_resource type="PackedScene" uid="uid://c2pp4d1yn3yo0" path="res://pickup_cube.tscn" id="2_1c2mv"]
+[ext_resource type="PackedScene" uid="uid://d1cw1gxmumlhg" path="res://target.tscn" id="3_f7g2b"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_gojnm"]
+
+[sub_resource type="Sky" id="Sky_1c2mv"]
+sky_material = SubResource("ProceduralSkyMaterial_gojnm")
+radiance_size = 1
+
+[sub_resource type="Environment" id="Environment_f7g2b"]
+background_mode = 2
+sky = SubResource("Sky_1c2mv")
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_gojnm"]
+size = Vector3(50, 1, 50)
+
+[sub_resource type="BoxMesh" id="BoxMesh_gojnm"]
+size = Vector3(50, 1, 50)
+
+[node name="TestLevel" type="Node3D"]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_f7g2b")
+
+[node name="Floor" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Floor"]
+shape = SubResource("BoxShape3D_gojnm")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
+mesh = SubResource("BoxMesh_gojnm")
+
+[node name="Player" parent="." instance=ExtResource("1_gojnm")]
+
+[node name="PickupCube" parent="." instance=ExtResource("2_1c2mv")]
+
+[node name="Target" parent="." instance=ExtResource("3_f7g2b")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.06, 0, -10.825)
