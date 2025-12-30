@@ -1,3 +1,35 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# If any legacy folders exist
+.import/
+
+# Godot import metadata (Godot creates these next to assets)
+*.import
+
+# Exported builds (adjust folder name if you use something else)
+exports/
+builds/
+
+# Mono / .NET (only if you ever enable C#)
+.mono/
+data_*/
+
+# -------------------------------------------------
+# Blender (optional, if you keep .blend in repo)
+# -------------------------------------------------
+*.blend1
+*.blend2
+*.blend@
+
+# -------------------------------------------------
+# OS / Editor junk
+# -------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# VS Code (optional)
+.vscode/

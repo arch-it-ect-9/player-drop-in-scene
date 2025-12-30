@@ -7,6 +7,9 @@ extends CharacterBody3D
 @export var air_accel := 4.0
 @export var jump_velocity := 4.8
 
+@export var right_hand_socket_path: NodePath
+@onready var right_hand_socket: Node3D = get_node_or_null(right_hand_socket_path) as Node3D
+
 @export_category("Look")
 @export var mouse_sensitivity := 0.0022
 @export_range(0.0, 89.9, 0.1) var max_pitch_degrees := 89.0
@@ -25,6 +28,10 @@ extends CharacterBody3D
 @export_category("Combat")
 @export var melee_cooldown := 1.0
 
+@export_category("Animation")
+@export var anim_tree_path: NodePath
+@export var debug_anim: bool = false
+
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera3D
 @onready var interact_ray: RayCast3D = $Head/InteractRay
@@ -32,9 +39,16 @@ extends CharacterBody3D
 @onready var hud: CanvasLayer = $HUD
 @onready var crosshair: Control = $HUD/Crosshair
 
+@onready var anim_tree: AnimationTree = get_node_or_null(anim_tree_path) as AnimationTree
+var anim_playback: AnimationNodeStateMachinePlayback = null
+
+
 var held_item: PickupCube = null
 var _held_snapped := false
 var _melee_timer := 0.0
+
+var _was_holding: bool = false
+var _warned_anim_playback_missing: bool = false
 
 var _gravity: float
 var _pitch_rad := 0.0
@@ -51,9 +65,48 @@ func _ready() -> void:
 	interact_ray.enabled = true
 	print_debug("[Player] _ready() gravity=%s max_pitch_deg=%s interact_range=%s" % [_gravity, max_pitch_degrees, interact_range]) # debug
 
+	# AnimationTree wiring (optional; fail gracefully if missing)
+	if anim_tree == null:
+		push_warning("[Player] anim_tree is null. anim_tree_path not set or path invalid.")
+	else:
+		anim_tree.active = true
+		print("[Player] anim_tree resolved -> ", anim_tree.get_path())
+		print("[Player] anim_tree.tree_root -> ", anim_tree.tree_root)
+
+		anim_playback = anim_tree.get("parameters/playback") as AnimationNodeStateMachinePlayback
+		if anim_playback == null:
+			push_warning("[Player] anim_playback is null. Tree Root may not be StateMachine or tree not configured.")
+		else:
+			print("[Player] anim_playback current -> ", anim_playback.get_current_node())
+
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	camera.current = true
 	print_debug("[Player] mouse captured; camera.current=%s" % [camera.current]) # debug
+
+	# Ensure initial state is consistent (guarded; will no-op if anim not wired)
+	_set_character_hold_state(false, true)
+
+	if right_hand_socket == null:
+		push_warning("[Player] right_hand_socket_path not assigned or invalid.")
+
+
+func _set_character_hold_state(is_holding: bool, force: bool = false) -> void:
+	if (not force) and is_holding == _was_holding:
+		return
+	_was_holding = is_holding
+
+	if anim_playback == null:
+		if not _warned_anim_playback_missing:
+			_warned_anim_playback_missing = true
+			push_warning("[Player] _set_character_hold_state called but anim_playback is null")
+		return
+
+	var state_name := "Hold" if is_holding else "Idle"
+	print("[Player] ANIM travel request -> ", state_name, " (held_item=", held_item, ")")
+	if debug_anim:
+		print("ANIM travel -> %s" % state_name)
+	anim_playback.travel(state_name)
+	print("[Player] ANIM current after travel -> ", anim_playback.get_current_node())
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Toggle mouse capture (Esc)
@@ -61,6 +114,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		print_debug("[Player] ui_cancel pressed; toggling mouse capture") # debug
 		_toggle_mouse_capture()
 		return
+
+	# Temporary manual animation override (debug)
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_H:
+			_set_character_hold_state(true, true)
+			return
+		if event.keycode == KEY_J:
+			_set_character_hold_state(false, true)
+			return
 
 	# Ignore gameplay inputs if we don't have captured mouse
 	if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
@@ -140,7 +202,8 @@ func _physics_process(delta: float) -> void:
 	if held_item != null and not _held_snapped:
 		var t: float = clampf(hold_lerp_speed * delta, 0.0, 1.0)
 		var curr_xform: Transform3D = Transform3D(held_item.global_transform.basis, held_item.global_transform.origin)
-		var target_xform: Transform3D = Transform3D(hold_point.global_transform.basis, hold_point.global_transform.origin)
+		var target_node: Node3D = right_hand_socket if right_hand_socket != null else hold_point
+		var target_xform: Transform3D = Transform3D(target_node.global_transform.basis, target_node.global_transform.origin)
 		# Position lerp
 		curr_xform.origin = curr_xform.origin.lerp(target_xform.origin, t)
 		# Rotation slerp using Basis.slerp
@@ -149,8 +212,14 @@ func _physics_process(delta: float) -> void:
 
 		# Finalize (snap/reparent) when close enough
 		if curr_xform.origin.distance_to(target_xform.origin) <= hold_snap_distance:
-			held_item.on_picked_up(hold_point, true)
+			if right_hand_socket:
+				held_item.reparent(right_hand_socket)
+				held_item.transform = Transform3D.IDENTITY
+			else:
+				push_warning("[Player] RightHandSocket not found. Keeping current parent as fallback.")
 			_held_snapped = true
+			# Trigger Hold only once pickup is finalized (snapped into hand)
+			_set_character_hold_state(true)
 
 	# Log only when we detect a hitch.
 	if delta >= _DEBUG_SPIKE_DELTA_SEC or (_after_move_and_slide_usec - _frame_start_usec) >= _DEBUG_SPIKE_COST_USEC:
@@ -182,6 +251,8 @@ func _drop_item() -> void:
 	# Parent to the current scene root (world)
 	var drop_parent: Node = get_tree().get_current_scene() if get_tree().get_current_scene() != null else get_parent()
 	var drop_transform: Transform3D = held_item.global_transform
+	if right_hand_socket:
+		drop_transform.origin = right_hand_socket.global_transform.origin
 
 	# Call the pickup's drop helper which reparents and restores collisions/physics
 	held_item.on_dropped(drop_parent, drop_transform)
@@ -194,6 +265,7 @@ func _drop_item() -> void:
 	# Clear held state
 	held_item = null
 	_held_snapped = false
+	_set_character_hold_state(false)
 
 func _try_pickup() -> void:
 	if held_item != null:
