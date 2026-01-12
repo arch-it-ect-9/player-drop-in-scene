@@ -41,6 +41,10 @@ var _saved_surface_materials: Dictionary = {}
 @export var drop_up_velocity := 1.5
 @export var drop_gravity_scale := 0.6
 
+@export_category("Throw")
+@export var throw_speed := 10.0
+@export var throw_up_bias := 0.1  ## Slight upward angle to make throws feel more natural
+
 @export_category("Animation")
 @export var anim_tree_path: NodePath
 @export var debug_anim := false
@@ -59,6 +63,29 @@ var _was_holding := false
 
 var held_item: PickupCube = null
 var _held_snapped := false
+
+## Returns true if the player is currently holding an item.
+var is_holding: bool:
+	get:
+		return held_item != null
+
+
+## Validates that held_item is still a valid instance. If the item was destroyed
+## or removed externally, this cleans up the held state and returns false.
+func _validate_held_item() -> bool:
+	if held_item == null:
+		return false
+	
+	if not is_instance_valid(held_item):
+		# Item was destroyed externally - clean up state
+		print_debug("[Player] held_item was destroyed externally, cleaning up state")
+		held_item = null
+		_held_snapped = false
+		_set_character_hold_state(false)
+		_set_hand_visibility_override(false)
+		return false
+	
+	return true
 
 var _gravity := 9.8
 var _pitch_rad := 0.0
@@ -144,9 +171,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("drop_item"):
 		_drop_item()
 
+	# Throw (Right click) - throw held item with force
+	if event.is_action_pressed("alt_fire"):
+		_throw_item()
+
 	# Fire (Left click) - pick up item if not holding, melee if holding
 	if event.is_action_pressed("fire"):
-		if held_item == null:
+		if not is_holding:
 			_try_pickup_with_fire()
 		else:
 			_try_melee()
@@ -201,7 +232,7 @@ func _physics_process(delta: float) -> void:
 
 	# If we have a held item that wasn't snapped into the hold point yet,
 	# smoothly move it toward the target and finalize when close.
-	if held_item != null and not _held_snapped:
+	if is_holding and _validate_held_item() and not _held_snapped:
 		var t: float = clampf(hold_lerp_speed * delta, 0.0, 1.0)
 		var curr_xform: Transform3D = Transform3D(held_item.global_transform.basis, held_item.global_transform.origin)
 
@@ -221,6 +252,8 @@ func _physics_process(delta: float) -> void:
 			# Reparent to hold_point (world-space, follows camera)
 			held_item.reparent(hold_point)
 			held_item.transform = Transform3D.IDENTITY
+			# Finalize the held state on the item (re-stabilize physics)
+			held_item.finalize_hold()
 			_held_snapped = true
 			# Trigger Hold only once pickup is finalized (snapped into hand)
 			_set_character_hold_state(true)
@@ -300,7 +333,7 @@ func _setup_viewmodel_weapon_grip() -> void:
 
 func _try_pickup_with_fire() -> void:
 	# Pick up item using the fire key (left click)
-	if held_item != null:
+	if is_holding:
 		return
 
 	interact_ray.force_raycast_update()
@@ -368,7 +401,7 @@ func _apply_no_depth_test_to_mesh(mi: MeshInstance3D, enabled: bool) -> void:
 
 
 func _drop_item() -> void:
-	if held_item == null:
+	if not is_holding or not _validate_held_item():
 		return
 
 	# Parent to the current scene root (world)
@@ -392,8 +425,41 @@ func _drop_item() -> void:
 	_set_hand_visibility_override(false)
 
 
+## Throws the held item forward with force based on camera direction.
+## This is the fun, emergent interaction - pick up, aim, throw!
+func _throw_item() -> void:
+	if not is_holding or not _validate_held_item():
+		return
+	
+	print_debug("[Player] Throwing %s with speed %s" % [held_item, throw_speed])
+	
+	# Parent to the current scene root (world)
+	var throw_parent: Node = get_tree().get_current_scene() if get_tree().get_current_scene() != null else get_parent()
+	var throw_transform: Transform3D = held_item.global_transform
+	# Use hold_point position for throw origin
+	throw_transform.origin = hold_point.global_transform.origin
+	
+	# Call the pickup's drop helper which reparents and restores collisions/physics
+	held_item.on_dropped(throw_parent, throw_transform)
+	
+	# Calculate throw direction from camera's forward vector
+	var throw_direction := -camera.global_transform.basis.z
+	# Add slight upward bias for more natural throw arc
+	throw_direction = (throw_direction + Vector3.UP * throw_up_bias).normalized()
+	
+	# Apply throw velocity - full physics, no gravity reduction
+	held_item.linear_velocity = throw_direction * throw_speed
+	# Don't modify gravity_scale - let it fall naturally after throw
+	
+	# Clear held state
+	held_item = null
+	_held_snapped = false
+	_set_character_hold_state(false)
+	_set_hand_visibility_override(false)
+
+
 func _try_pickup() -> void:
-	if held_item != null:
+	if is_holding:
 		return
 
 	interact_ray.force_raycast_update()
@@ -410,9 +476,9 @@ func _try_pickup() -> void:
 
 
 func _try_melee() -> void:
-	# Only melee if holding something
-	if held_item == null:
-		print_debug("[Player] _try_melee() ignored; not holding item") # debug
+	# Only melee if holding something valid
+	if not is_holding or not _validate_held_item():
+		print_debug("[Player] _try_melee() ignored; not holding valid item") # debug
 		return
 
 	# (rest of your melee code unchanged...)
