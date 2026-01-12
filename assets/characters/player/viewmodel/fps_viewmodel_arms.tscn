@@ -1,0 +1,20 @@
+[gd_scene load_steps=2 format=3 uid="uid://bdsr0tfgopm7"]
+
+[ext_resource type="PackedScene" uid="uid://dpt7uikhlgi5c" path="res://assets/characters/player/viewmodel/fps_viewmodel_arms.glb" id="1_dcqqs"]
+
+[node name="fps_viewmodel_arms" instance=ExtResource("1_dcqqs")]
+
+[node name="Skeleton3D" parent="Armature" index="0"]
+bones/0/position = Vector3(0.14513902, 0.11081153, -0.0033784492)
+bones/0/rotation = Quaternion(0.91812223, 0.0023013882, -0.0010639596, 0.3962894)
+bones/1/rotation = Quaternion(-0.581362, 0.1583584, -0.016449979, 0.7979162)
+bones/3/position = Vector3(-0.14513902, 0.11081153, -0.0033784492)
+bones/3/rotation = Quaternion(0.91812223, -0.0023013882, 0.0010639596, 0.3962894)
+bones/4/rotation = Quaternion(-0.5831056, -0.13889396, 0.013969269, 0.80031323)
+
+[node name="fps_viewmodel_arms" parent="Armature/Skeleton3D" index="0"]
+layers = 2
+cast_shadow = 0
+
+[node name="AnimationPlayer" parent="." index="1"]
+autoplay = "idle_unarmed"

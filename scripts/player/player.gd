@@ -41,7 +41,7 @@ var _saved_surface_materials: Dictionary = {}
 @export var debug_anim := false
 
 @onready var head: Node3D = $Head
-@onready var camera: Camera3D = $Head/Camera3D
+@onready var camera: Camera3D = $Head/WorldCamera
 @onready var interact_ray: RayCast3D = $Head/InteractRay
 @onready var hold_point: Marker3D = $Head/HoldPoint
 @onready var hud: CanvasLayer = $HUD

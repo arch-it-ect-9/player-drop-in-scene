@@ -1,6 +1,6 @@
 [gd_scene load_steps=8 format=3 uid="uid://bordqsg5k5ij0"]
 
-[ext_resource type="PackedScene" uid="uid://sk2fj4yneb8l" path="res://models/taco_truck_cook_rig_clean.glb" id="1_t15mf"]
+[ext_resource type="PackedScene" uid="uid://sk2fj4yneb8l" path="res://assets/characters/player/worldmodel/taco_truck_cook_world.glb" id="1_v81t6"]
 
 [sub_resource type="AnimationNodeAnimation" id="AnimationNodeAnimation_t15mf"]
 animation = &"Hold"
@@ -32,7 +32,7 @@ graph_offset = Vector2(45.674526, 0)
 
 [node name="TacoTruckCookVisual" type="Node3D"]
 
-[node name="Model" parent="." instance=ExtResource("1_t15mf")]
+[node name="Model" parent="." instance=ExtResource("1_v81t6")]
 
 [node name="BoneAttachment3D" type="BoneAttachment3D" parent="Model/TacoTruckCook_Rig/Skeleton3D" index="2"]
 transform = Transform3D(1, -1.4210855e-14, -1.24676856e-08, 1.222557e-08, -0.1961162, 0.9805806, -2.4451197e-09, -0.9805806, -0.1961162, 0.30485082, 0.7149767, -0.020323386)

@@ -1,6 +1,6 @@
 [gd_scene load_steps=5 format=3 uid="uid://c2pp4d1yn3yo0"]
 
-[ext_resource type="Script" uid="uid://bp57nddvxvh87" path="res://pickup_cube.gd" id="1_ac8nd"]
+[ext_resource type="Script" uid="uid://bp57nddvxvh87" path="res://assets/props/pickup_cube/pickup_cube.gd" id="1_ac8nd"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_aeer0"]
 size = Vector3(0.25, 0.25, 0.25)
