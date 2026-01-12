@@ -13,6 +13,11 @@ extends CharacterBody3D
 
 @export_category("Viewmodel")
 @export var force_hand_visible_when_holding := true
+# Path to the viewmodel skeleton for weapon_grip bone attachment
+@export var viewmodel_skeleton_path: NodePath = NodePath("HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelRoot_VM/fps_viewmodel_arms/Armature/Skeleton3D")
+@onready var viewmodel_skeleton: Skeleton3D = null
+var viewmodel_weapon_grip_attachment: BoneAttachment3D = null
+const WEAPON_GRIP_BONE_NAME := "weapon_grip"
 
 const _RIGHT_HAND_SOCKET_FALLBACK_PATH := NodePath("Visuals/TacoTruckCookVisual/Model/TacoTruckCook_Rig/Skeleton3D/BoneAttachment3D")
 const _MODEL_ROOT_PATH := NodePath("Visuals/TacoTruckCookVisual/Model")
@@ -93,6 +98,9 @@ func _ready() -> void:
 
 	# Resolve the hand socket (BoneAttachment3D) now that the scene is ready.
 	_resolve_right_hand_socket()
+	
+	# Setup viewmodel weapon_grip bone attachment for held items
+	_setup_viewmodel_weapon_grip()
 
 
 func _set_character_hold_state(is_holding: bool, force: bool = false) -> void:
@@ -136,9 +144,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("drop_item"):
 		_drop_item()
 
-	# Melee (Left click)
+	# Fire (Left click) - pick up item if not holding, melee if holding
 	if event.is_action_pressed("fire"):
-		_try_melee()
+		if held_item == null:
+			_try_pickup_with_fire()
+		else:
+			_try_melee()
 
 	# Look
 	if event is InputEventMouseMotion:
@@ -199,17 +210,17 @@ func _physics_process(delta: float) -> void:
 
 		# Position lerp
 		curr_xform.origin = curr_xform.origin.lerp(target_xform.origin, t)
-		# Rotation slerp using Basis.slerp
-		curr_xform.basis = curr_xform.basis.slerp(target_xform.basis, t)
+		# Rotation slerp using Basis.slerp - must orthonormalize to ensure valid rotation matrices
+		var curr_basis_normalized: Basis = curr_xform.basis.orthonormalized()
+		var target_basis_normalized: Basis = target_xform.basis.orthonormalized()
+		curr_xform.basis = curr_basis_normalized.slerp(target_basis_normalized, t)
 		held_item.global_transform = curr_xform
 
 		# Finalize (snap/reparent) when close enough
 		if curr_xform.origin.distance_to(target_xform.origin) <= hold_snap_distance:
-			if right_hand_socket:
-				held_item.reparent(right_hand_socket)
-				held_item.transform = Transform3D.IDENTITY
-			else:
-				push_warning("[Player] RightHandSocket not found. Keeping current parent as fallback.")
+			# Reparent to hold_point (world-space, follows camera)
+			held_item.reparent(hold_point)
+			held_item.transform = Transform3D.IDENTITY
 			_held_snapped = true
 			# Trigger Hold only once pickup is finalized (snapped into hand)
 			_set_character_hold_state(true)
@@ -258,9 +269,52 @@ func _resolve_right_hand_socket() -> void:
 
 
 func _get_hold_target() -> Node3D:
-	# Prefer the bone-attached socket (so the held item follows the hand).
-	# Fall back to the camera hold point if something is misconfigured.
-	return right_hand_socket if right_hand_socket != null else hold_point
+	# Use hold_point for world-space items. The viewmodel weapon_grip is inside a SubViewport
+	# and has a different coordinate system - it's only for rendering FPS weapon models.
+	# hold_point is in the main scene tree and tracks with the camera properly.
+	return hold_point
+
+
+func _setup_viewmodel_weapon_grip() -> void:
+	# Get the viewmodel skeleton
+	viewmodel_skeleton = get_node_or_null(viewmodel_skeleton_path) as Skeleton3D
+	if viewmodel_skeleton == null:
+		push_warning("[Player] Viewmodel skeleton not found at path: %s" % [String(viewmodel_skeleton_path)])
+		return
+	
+	# Find the weapon_grip bone index
+	var bone_idx := viewmodel_skeleton.find_bone(WEAPON_GRIP_BONE_NAME)
+	if bone_idx == -1:
+		push_warning("[Player] Bone '%s' not found in viewmodel skeleton" % [WEAPON_GRIP_BONE_NAME])
+		return
+	
+	# Create a BoneAttachment3D for the weapon_grip bone
+	viewmodel_weapon_grip_attachment = BoneAttachment3D.new()
+	viewmodel_weapon_grip_attachment.name = "WeaponGripAttachment"
+	viewmodel_weapon_grip_attachment.bone_name = WEAPON_GRIP_BONE_NAME
+	viewmodel_weapon_grip_attachment.bone_idx = bone_idx
+	viewmodel_skeleton.add_child(viewmodel_weapon_grip_attachment)
+	
+	print_debug("[Player] Viewmodel weapon_grip attachment created at bone index %d" % [bone_idx])
+
+
+func _try_pickup_with_fire() -> void:
+	# Pick up item using the fire key (left click)
+	if held_item != null:
+		return
+
+	interact_ray.force_raycast_update()
+	print_debug("[Player] Fire pickup: colliding=%s collider=%s" % [interact_ray.is_colliding(), interact_ray.get_collider()])
+	if not interact_ray.is_colliding():
+		return
+
+	var collider: Object = interact_ray.get_collider() as Object
+	if collider is PickupCube:
+		held_item = collider
+		# Request pickup but don't snap immediately — we'll lerp it into place
+		held_item.on_picked_up(_get_hold_target(), false)
+		_held_snapped = false
+		print_debug("[Player] Picked up %s with fire key" % [held_item])
 
 
 func _set_hand_visibility_override(enabled: bool) -> void:
@@ -320,8 +374,8 @@ func _drop_item() -> void:
 	# Parent to the current scene root (world)
 	var drop_parent: Node = get_tree().get_current_scene() if get_tree().get_current_scene() != null else get_parent()
 	var drop_transform: Transform3D = held_item.global_transform
-	if right_hand_socket:
-		drop_transform.origin = right_hand_socket.global_transform.origin
+	# Use hold_point position for drop origin (world-space, tracks with camera)
+	drop_transform.origin = hold_point.global_transform.origin
 
 	# Call the pickup's drop helper which reparents and restores collisions/physics
 	held_item.on_dropped(drop_parent, drop_transform)
