@@ -1,8 +1,8 @@
 [gd_scene load_steps=9 format=3 uid="uid://e3fdy8h24p5"]
 
 [ext_resource type="PackedScene" uid="uid://b3gqjpq5gcrs1" path="res://scenes/actors/player/player.tscn" id="1_fr1um"]
-[ext_resource type="PackedScene" uid="uid://c2pp4d1yn3yo0" path="res://assets/props/pickup_cube/pickup_cube.tscn" id="2_v45ci"]
 [ext_resource type="PackedScene" uid="uid://d1cw1gxmumlhg" path="res://scenes/gameplay/target.tscn" id="3_48ne7"]
+[ext_resource type="PackedScene" uid="uid://cg6iq61db0ftr" path="res://scenes/gameplay/interactables/button.tscn" id="4_v45ci"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_gojnm"]
 
@@ -34,11 +34,13 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
 shape = SubResource("BoxShape3D_gojnm")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.01343441, 0, 0.015674114)
 mesh = SubResource("BoxMesh_gojnm")
 
 [node name="Player" parent="." instance=ExtResource("1_fr1um")]
 
-[node name="PickupCube" parent="." instance=ExtResource("2_v45ci")]
-
 [node name="Target" parent="." instance=ExtResource("3_48ne7")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.06, 0, -10.825)
+
+[node name="Button" parent="." instance=ExtResource("4_v45ci")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4265382, -3.2501435)

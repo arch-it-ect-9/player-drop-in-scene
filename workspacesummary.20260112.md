@@ -1,6 +1,6 @@
 # Player Drop-In Scene — Workspace Summary
 
-**Date:** January 12, 2026  
+**Date:** January 24, 2026  
 **Engine:** Godot 4.5.1 (Forward Plus renderer)  
 **Modeler/Asset Tool:** Blender 4.5  
 **Project Name:** `Player_DropInScene`
@@ -9,7 +9,7 @@
 
 ## Project Overview
 
-This is a first-person player controller template/drop-in scene for Godot 4.5. The project demonstrates a complete FPS character setup with separate viewmodel and worldmodel rendering, object pickup mechanics, and basic interaction systems.
+This is a first-person player controller template/drop-in scene for Godot 4.5. The project demonstrates a complete FPS character setup with separate viewmodel and worldmodel rendering, a generic object holding system, and a component-based interaction framework.
 
 ---
 
@@ -46,13 +46,6 @@ player-drop-in-scene/
 │   │                   │           └── BoneAttachment3D (bone_name="hand.R", bone_idx=5)
 │   │                   └── AnimationTree (states: Start→Idle↔Hold)
 │   │
-│   └── props/
-│       └── pickup_cube/
-│           ├── pickup_cube.gd                # PickupCube class
-│           └── pickup_cube.tscn              # uid://c2pp4d1yn3yo0
-│               └── PickupCube (RigidBody3D, collision_layer=4, script=pickup_cube.gd)
-│                   ├── CollisionShape3D (BoxShape3D 0.25³, y=0.225)
-│                   └── MeshInstance3D (BoxMesh 0.25³, y=0.225)
 │
 ├── scenes/
 │   ├── actors/
@@ -92,7 +85,6 @@ player-drop-in-scene/
 │               │   ├── CollisionShape3D (BoxShape3D 50×1×50)
 │               │   └── MeshInstance3D (BoxMesh 50×1×50)
 │               ├── Player (instance of player.tscn)
-│               ├── PickupCube (instance of pickup_cube.tscn)
 │               └── Target (instance of target.tscn, z=-10.825)
 │
 └── scripts/
@@ -120,27 +112,22 @@ From `player.gd` (attached to Player node):
 | TacoTruckCookVisual | `$Visuals/TacoTruckCookVisual` |
 | AnimationTree (worldmodel) | `$Visuals/TacoTruckCookVisual/AnimationTree` |
 
-From `pickup_cube.gd` (attached to PickupCube node):
-| Node | Path from PickupCube |
-|------|----------------------|
-| CollisionShape3D | `$CollisionShape3D` |
-| MeshInstance3D | `$MeshInstance3D` |
-
 ---
 
 ## Input Map
 
-| Action        | Key/Button         |
-|---------------|--------------------|
-| `move_forward`| W                  |
-| `move_back`   | S                  |
-| `move_left`   | A                  |
-| `move_right`  | D                  |
-| `jump`        | Space              |
-| `sprint`      | Shift              |
-| `fire`        | Left Mouse Button  |
-| `interact`    | E                  |
-| `drop_item`   | Q                  |
+| Action        | Key/Button         | Purpose |
+|---------------|--------------------|---------|
+| `move_forward`| W                  | Move forward |
+| `move_back`   | S                  | Move backward |
+| `move_left`   | A                  | Strafe left |
+| `move_right`  | D                  | Strafe right |
+| `jump`        | Space              | Jump |
+| `sprint`      | Shift              | Sprint |
+| `interact`    | E                  | Interact with objects (via Interactable component) |
+| `fire`        | Left Mouse Button  | Attack / use held item |
+| `alt_fire`    | Right Mouse Button | Throw held item |
+| `drop_item`   | Q                  | Drop held item |
 
 ---
 
@@ -152,7 +139,6 @@ The main scene and entry point. Contains:
 - **DirectionalLight3D** for scene lighting
 - **Floor** — 50×50 unit StaticBody3D platform
 - **Player** — instanced player scene
-- **PickupCube** — physics-based interactable cube
 - **Target** — target dummy at position (0.06, 0, -10.825)
 
 ### `scenes/actors/player/player.tscn`
@@ -313,15 +299,26 @@ TacoTruckCook_Rig
 | `MAT_Skin` | 0 | 0.85 | `taco_truck_cook_world_img4.png` |
 | `MAT_Hair` | 0 | 0.85 | `taco_truck_cook_world_img5.png` |
 
-### `assets/props/pickup_cube/pickup_cube.tscn`
-Physics-based interactable cube (RigidBody3D):
-- Size: 0.25×0.25×0.25 units
-- Collision layer: 4 (interactables)
-- `pickup_cube.gd` script attached
-
 ---
 
 ## Scripts
+
+### `scripts/gameplay/interactable.gd`
+```gdscript
+class_name Interactable
+extends Node
+```
+Component-based interaction system:
+- **InteractionType enum**: USE, PICKUP, EXAMINE, CLOSE, OPEN
+- `@export var enabled` — Toggle to enable/disable interactions
+- `@export var prompt_override` — Custom UI text override
+- `@export var interaction_type` — Type of interaction (defaults to USE)
+- **Signal**: `interacted(user: Node)` — Emitted when interaction occurs
+- `interact(user: Node)` — Called by player to trigger interaction
+- `get_prompt_text() -> String` — Returns action text with override support
+- `get_hud_text(key_hint: String) -> String` — Returns formatted UI text (e.g., "Use (Press E)")
+
+**Usage**: Attach to any Node with collision. Connect the `interacted` signal to implement specific behavior (door open, item pickup, etc.). The player's interact system automatically detects and calls `interact()` on nearby Interactable components.
 
 ### `scripts/gameplay/target.gd`
 ```gdscript
@@ -332,20 +329,52 @@ Simple destructible target:
 - `@export var max_hits := 10` — Hits before destruction
 - `apply_damage(amount: int)` — Accumulates hits, calls `queue_free()` when max reached
 
-### `assets/props/pickup_cube/pickup_cube.gd`
+### `scripts/player/player.gd`
 ```gdscript
-class_name PickupCube
-extends RigidBody3D
+extends CharacterBody3D
 ```
-Fully-featured pickup object with state management:
-- Captures and restores default physics/collision settings
-- `on_picked_up(holder: Node3D, snap: bool)`:
-  - Freezes physics, zeros velocity
-  - Optionally disables collision while held
-  - Can snap immediately or allow smooth interpolation
-- `on_dropped(drop_parent: Node, drop_transform: Transform3D)`:
-  - Reparents to world, restores physics
-  - Unfreezes for simulation
+Complete FPS player controller with:
+
+**Movement & Physics**:
+- Configurable walk/sprint speeds and acceleration
+- Jump velocity with proper gravity integration
+- Capsule collision (radius 0.35, height 1.4)
+
+**Camera & Input**:
+- First-person camera with pitch/yaw control
+- Mouse sensitivity configuration
+- Mouse capture toggle (Esc key)
+
+**Interaction System**:
+- `_try_interact()` — Raycasts for `Interactable` components and calls their `interact()` method
+- `_find_interactable(hit: Object)` — Recursively searches node tree for Interactable component
+- Interact range: 3 meters (configurable)
+
+**Item Holding System**:
+- Generic `held_item: RigidBody3D` — Supports any physics object
+- `_try_melee()` — Attacks with held item (left click) or performs melee raycast
+- `_drop_item()` — Drops item with forward/upward velocity and reduced gravity
+- `_throw_item()` — Throws held item with force and upward bias
+- Smooth lerp interpolation for pickup animation (snap when close)
+- Smooth hand visibility override (prevents occlusion while holding)
+
+**Animation**:
+- AnimationTree integration for Idle/Hold states
+- Optional debug animation override (H/J keys)
+
+**Viewmodel System**:
+- Separate FPS arm rendering layer (layer 2)
+- Weapon grip bone attachment for held items
+- Independent camera and rendering in SubViewport
+
+**Exports** (organized by category):
+- Movement: walk_speed, sprint_speed, ground_accel, air_accel, jump_velocity
+- Viewmodel: force_hand_visible_when_holding, viewmodel_skeleton_path
+- Look: mouse_sensitivity, max_pitch_degrees
+- Interaction: interact_range, hold_lerp_speed, hold_snap_distance
+- Drop: drop_forward_velocity, drop_up_velocity, drop_gravity_scale
+- Throw: throw_speed, throw_up_bias
+- Animation: anim_tree_path, debug_anim
 
 ---
 
@@ -368,6 +397,7 @@ The project uses a **dual-camera viewmodel system** to prevent weapon/arm clippi
 ## Notes
 
 - Character model is "Taco Truck Cook" — a stylized humanoid rig from Blender
-- The AnimationTree on the worldmodel suggests support for idle/hold states (likely for item holding animations)
-- InteractRay uses collision mask 4, matching the PickupCube's collision layer 4
-- Project is set up as a reusable drop-in player scene for other Godot projects
+- The AnimationTree on the worldmodel supports idle/hold states for item holding animations
+- The interaction system is fully component-based: add an `Interactable` node to any object and connect to its `interacted` signal
+- The holding system is generic and works with any `RigidBody3D` — implement `on_picked_up()` and `on_dropped()` methods for custom pickup behavior
+- Project is designed as a reusable drop-in player scene for other Godot projects

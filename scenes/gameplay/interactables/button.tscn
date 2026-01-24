@@ -1,0 +1,22 @@
+[gd_scene load_steps=5 format=3 uid="uid://cg6iq61db0ftr"]
+
+[ext_resource type="Script" uid="uid://cdxg8afk35316" path="res://scripts/gameplay/interactables/button.gd" id="1_gokab"]
+[ext_resource type="Script" uid="uid://odpr1l22jufx" path="res://scripts/gameplay/interactable.gd" id="2_julhn"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_cic5i"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_ll0wn"]
+
+[node name="Button" type="StaticBody3D"]
+script = ExtResource("1_gokab")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_cic5i")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_ll0wn")
+
+[node name="Interactable" type="Node" parent="."]
+script = ExtResource("2_julhn")
+
+[connection signal="interacted" from="Interactable" to="." method="_on_interactable_interacted"]

@@ -43,7 +43,7 @@ var _saved_surface_materials: Dictionary = {}
 
 @export_category("Throw")
 @export var throw_speed := 10.0
-@export var throw_up_bias := 0.1  ## Slight upward angle to make throws feel more natural
+@export var throw_up_bias := 0.1 ## Slight upward angle to make throws feel more natural
 
 @export_category("Animation")
 @export var anim_tree_path: NodePath
@@ -52,6 +52,7 @@ var _saved_surface_materials: Dictionary = {}
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/WorldCamera
 @onready var interact_ray: RayCast3D = $Head/InteractRay
+@onready var interact_prompt: Label = $HUD/InteractPrompt
 @onready var hold_point: Marker3D = $Head/HoldPoint
 @onready var hud: CanvasLayer = $HUD
 @onready var crosshair: Control = $HUD/Crosshair
@@ -61,7 +62,7 @@ var anim_playback: AnimationNodeStateMachinePlayback = null
 var _warned_anim_playback_missing := false
 var _was_holding := false
 
-var held_item: PickupCube = null
+var held_item: RigidBody3D = null
 var _held_snapped := false
 
 ## Returns true if the player is currently holding an item.
@@ -130,10 +131,10 @@ func _ready() -> void:
 	_setup_viewmodel_weapon_grip()
 
 
-func _set_character_hold_state(is_holding: bool, force: bool = false) -> void:
-	if (not force) and is_holding == _was_holding:
+func _set_character_hold_state(should_hold: bool, force: bool = false) -> void:
+	if (not force) and should_hold == _was_holding:
 		return
-	_was_holding = is_holding
+	_was_holding = should_hold
 
 	if anim_playback == null:
 		if not _warned_anim_playback_missing:
@@ -141,7 +142,7 @@ func _set_character_hold_state(is_holding: bool, force: bool = false) -> void:
 			push_warning("[Player] _set_character_hold_state called but anim_playback is null")
 		return
 
-	var state_name := "Hold" if is_holding else "Idle"
+	var state_name := "Hold" if should_hold else "Idle"
 	print("[Player] ANIM travel request -> ", state_name, " (held_item=", held_item, ")")
 	if debug_anim:
 		print("ANIM travel -> %s" % state_name)
@@ -163,9 +164,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_J:
 			_set_character_hold_state(false, true)
 
-	# Interact (E) - pick up if possible
+	# Interact (E) - interact with objects (pick up, use, etc.)
 	if event.is_action_pressed("interact"):
-		_try_pickup()
+		print("INTERACT pressed")
+		# output debug information 
+		print_debug("[Player] interact_ray enabled: %s, target_position: %s" % [interact_ray.enabled, interact_ray.target_position])
+		
+		_try_interact()
 
 	# Drop (Q)
 	if event.is_action_pressed("drop_item"):
@@ -175,12 +180,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("alt_fire"):
 		_throw_item()
 
-	# Fire (Left click) - pick up item if not holding, melee if holding
+	# Fire (Left click) - attack / use held item (no pickup)
 	if event.is_action_pressed("fire"):
-		if not is_holding:
-			_try_pickup_with_fire()
-		else:
-			_try_melee()
+		_try_melee()
 
 	# Look
 	if event is InputEventMouseMotion:
@@ -190,13 +192,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Head pitch
 		_pitch_rad = clamp(
 			_pitch_rad - event.relative.y * mouse_sensitivity,
-			-_max_pitch_rad,
+			- _max_pitch_rad,
 			_max_pitch_rad
 		)
 		head.rotation.x = _pitch_rad
 
 
 func _physics_process(delta: float) -> void:
+	_update_interact_prompt()
+	
 	var _frame_start_usec := Time.get_ticks_usec() # debug
 	var on_floor := is_on_floor()
 
@@ -275,6 +279,20 @@ func _physics_process(delta: float) -> void:
 				[delta * 1000.0, Engine.get_frames_per_second(), total_usec, timers_usec, gravity_usec, jump_usec, move_math_usec, move_and_slide_usec, global_position, velocity]
 			) # debug
 
+func _update_interact_prompt() -> void:
+	interact_ray.force_raycast_update()
+
+	var text := ""
+	if interact_ray.is_colliding():
+		var hit := interact_ray.get_collider()
+		var interactable := _find_interactable(hit)
+		if interactable:
+			# text = interactable.prompt_text + " (E); Debug : " + (hit as Node).name
+			text = interactable.get_hud_text("E")
+
+	interact_prompt.text = text
+	interact_prompt.visible = (text != "")
+
 
 func _toggle_mouse_capture() -> void:
 	var captured := Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
@@ -329,25 +347,6 @@ func _setup_viewmodel_weapon_grip() -> void:
 	viewmodel_skeleton.add_child(viewmodel_weapon_grip_attachment)
 	
 	print_debug("[Player] Viewmodel weapon_grip attachment created at bone index %d" % [bone_idx])
-
-
-func _try_pickup_with_fire() -> void:
-	# Pick up item using the fire key (left click)
-	if is_holding:
-		return
-
-	interact_ray.force_raycast_update()
-	print_debug("[Player] Fire pickup: colliding=%s collider=%s" % [interact_ray.is_colliding(), interact_ray.get_collider()])
-	if not interact_ray.is_colliding():
-		return
-
-	var collider: Object = interact_ray.get_collider() as Object
-	if collider is PickupCube:
-		held_item = collider
-		# Request pickup but don't snap immediately — we'll lerp it into place
-		held_item.on_picked_up(_get_hold_target(), false)
-		_held_snapped = false
-		print_debug("[Player] Picked up %s with fire key" % [held_item])
 
 
 func _set_hand_visibility_override(enabled: bool) -> void:
@@ -458,21 +457,30 @@ func _throw_item() -> void:
 	_set_hand_visibility_override(false)
 
 
-func _try_pickup() -> void:
-	if is_holding:
-		return
+func _try_interact() -> void:
+	print("_try_interact")
 
 	interact_ray.force_raycast_update()
-	print("colliding=", interact_ray.is_colliding(), " collider=", interact_ray.get_collider())
 	if not interact_ray.is_colliding():
 		return
 
-	var collider: Object = interact_ray.get_collider() as Object
-	if collider is PickupCube:
-		held_item = collider
-		# Request pickup but don't snap immediately — we'll lerp it into place
-		held_item.on_picked_up(_get_hold_target(), false)
-		_held_snapped = false
+	var hit := interact_ray.get_collider()
+	var interactable := _find_interactable(hit)
+	if interactable:
+		interactable.interact(self)
+
+func _find_interactable(hit: Object) -> Interactable:
+	if hit is not Node:
+		return null
+
+	var n := hit as Node
+	while n:
+		var c := n.get_node_or_null("Interactable")
+		if c is Interactable:
+			return c
+		n = n.get_parent()
+
+	return null
 
 
 func _try_melee() -> void:
