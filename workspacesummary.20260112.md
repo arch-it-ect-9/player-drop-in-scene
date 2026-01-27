@@ -61,6 +61,7 @@ player-drop-in-scene/
 │   │               ├── HUD (CanvasLayer)
 │   │               │   ├── Crosshair (TextureRect, 16×16, centered)
 │   │               │   │   └── ColorRect (4×4 white square)
+│   │               │   ├── InteractPrompt (Label, centered, hidden when no target)
 │   │               │   └── ViewModelViewportContainer (SubViewportContainer, stretch=true)
 │   │               │       └── ViewModelViewport (SubViewport, transparent_bg=true)
 │   │               │           └── ViewModelWorld (Node3D)
@@ -71,10 +72,16 @@ player-drop-in-scene/
 │   │                   └── TacoTruckCookVisual (instance of taco_truck_cook_world.tscn)
 │   │
 │   ├── gameplay/
-│   │   └── target.tscn                       # uid://d1cw1gxmumlhg
-│   │       └── Target (StaticBody3D, script=target.gd)
+│   │   ├── target.tscn                       # uid://d1cw1gxmumlhg
+│   │   │   └── Target (StaticBody3D, script=target.gd)
+│   │   │       ├── CollisionShape3D (BoxShape3D)
+│   │   │       └── MeshInstance3D (BoxMesh)
+│   │   └── interactables/
+│   │       └── button.tscn                   # uid://cg6iq61db0ftr
+│   │           ├── Button (StaticBody3D, script=button.gd)
+│   │           ├── MeshInstance3D (BoxMesh)
 │   │           ├── CollisionShape3D (BoxShape3D)
-│   │           └── MeshInstance3D (BoxMesh)
+│   │           └── Interactable (Node, script=interactable.gd, emits on use)
 │   │
 │   └── levels/
 │       └── test_level.tscn                   # uid://e3fdy8h24p5 (main_scene)
@@ -85,13 +92,17 @@ player-drop-in-scene/
 │               │   ├── CollisionShape3D (BoxShape3D 50×1×50)
 │               │   └── MeshInstance3D (BoxMesh 50×1×50)
 │               ├── Player (instance of player.tscn)
-│               └── Target (instance of target.tscn, z=-10.825)
+│               ├── Target (instance of target.tscn, z=-10.825)
+│               └── Button (instance of button.tscn, y=1.426, z=-3.25)
 │
 └── scripts/
-    ├── gameplay/
-    │   └── target.gd                         # class_name TargetDummy
-    └── player/
-        └── player.gd                         # Player controller
+  ├── gameplay/
+  │   ├── interactable.gd                   # class_name Interactable
+  │   ├── target.gd                         # class_name TargetDummy
+  │   └── interactables/
+  │       └── button.gd
+  └── player/
+    └── player.gd                         # Player controller
 ```
 
 ### Node Path Reference Quick Guide
@@ -104,6 +115,7 @@ From `player.gd` (attached to Player node):
 | HandTarget | `$Head/WorldCamera/HandTarget` |
 | InteractRay | `$Head/InteractRay` |
 | HoldPoint | `$Head/HoldPoint` |
+| InteractPrompt | `$HUD/InteractPrompt` |
 | Crosshair | `$HUD/Crosshair` |
 | ViewModelViewport | `$HUD/ViewModelViewportContainer/ViewModelViewport` |
 | ViewModelCamera_VM | `$HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelCamera_VM` |
@@ -140,6 +152,7 @@ The main scene and entry point. Contains:
 - **Floor** — 50×50 unit StaticBody3D platform
 - **Player** — instanced player scene
 - **Target** — target dummy at position (0.06, 0, -10.825)
+- **Button** — interactable test block at position (0, 1.426, -3.25)
 
 ### `scenes/actors/player/player.tscn`
 First-person CharacterBody3D player with:
@@ -151,11 +164,18 @@ First-person CharacterBody3D player with:
   - **HoldPoint** — Marker3D for held object placement (rotated for natural hold pose)
 - **HUD** (CanvasLayer)
   - **Crosshair** — Centered 16×16 white square
+  - **InteractPrompt** — Centered label that shows nearby interactable prompts
   - **ViewModelViewportContainer** → **ViewModelViewport** (SubViewport)
     - Separate rendering layer for first-person arms
     - **ViewModelCamera_VM** — cull_mask=2, FOV=30°
     - **ViewModelRoot_VM** → **fps_viewmodel_arms** instance
 - **Visuals** → **TacoTruckCookVisual** — Third-person world model (for multiplayer/mirrors)
+
+### `scenes/gameplay/interactables/button.tscn`
+Simple interactable test block:
+- StaticBody3D with BoxMesh and BoxShape3D
+- `Interactable` component (interaction type: USE) connected to `_on_interactable_interacted`
+- `button.gd` prints the user name when interacted with
 
 ### `scenes/gameplay/target.tscn`
 Simple target dummy (StaticBody3D) with:
@@ -302,79 +322,29 @@ TacoTruckCook_Rig
 ---
 
 ## Scripts
+### Script Catalog
 
-### `scripts/gameplay/interactable.gd`
-```gdscript
-class_name Interactable
-extends Node
-```
-Component-based interaction system:
-- **InteractionType enum**: USE, PICKUP, EXAMINE, CLOSE, OPEN
-- `@export var enabled` — Toggle to enable/disable interactions
-- `@export var prompt_override` — Custom UI text override
-- `@export var interaction_type` — Type of interaction (defaults to USE)
-- **Signal**: `interacted(user: Node)` — Emitted when interaction occurs
-- `interact(user: Node)` — Called by player to trigger interaction
-- `get_prompt_text() -> String` — Returns action text with override support
-- `get_hud_text(key_hint: String) -> String` — Returns formatted UI text (e.g., "Use (Press E)")
+**`res://scripts/gameplay/interactable.gd`** — Component that standardizes interaction prompts and signaling.
+- Defines `InteractionType` enum (USE, PICKUP, EXAMINE, CLOSE, OPEN) with prompt text helpers.
+- Exports toggles for enable/disable and prompt override; emits `interacted(user)` when `interact()` is called.
+- Dependencies: none; consumed by player logic via raycast and by any node that connects to its signal.
 
-**Usage**: Attach to any Node with collision. Connect the `interacted` signal to implement specific behavior (door open, item pickup, etc.). The player's interact system automatically detects and calls `interact()` on nearby Interactable components.
+**`res://scripts/gameplay/target.gd`** — Simple destructible dummy.
+- Exports `max_hits`; `apply_damage()` increments hits and frees the node when the limit is reached.
+- Dependencies: none beyond core nodes; instanced by `scenes/gameplay/target.tscn`.
 
-### `scripts/gameplay/target.gd`
-```gdscript
-class_name TargetDummy
-extends StaticBody3D
-```
-Simple destructible target:
-- `@export var max_hits := 10` — Hits before destruction
-- `apply_damage(amount: int)` — Accumulates hits, calls `queue_free()` when max reached
+**`res://scripts/gameplay/interactables/button.gd`** — Minimal demo for the interaction system.
+- Receives the `Interactable.interacted` signal and logs which user activated it.
+- Dependencies: requires a sibling `Interactable` node (res://scripts/gameplay/interactable.gd) wired in the scene.
 
-### `scripts/player/player.gd`
-```gdscript
-extends CharacterBody3D
-```
-Complete FPS player controller with:
-
-**Movement & Physics**:
-- Configurable walk/sprint speeds and acceleration
-- Jump velocity with proper gravity integration
-- Capsule collision (radius 0.35, height 1.4)
-
-**Camera & Input**:
-- First-person camera with pitch/yaw control
-- Mouse sensitivity configuration
-- Mouse capture toggle (Esc key)
-
-**Interaction System**:
-- `_try_interact()` — Raycasts for `Interactable` components and calls their `interact()` method
-- `_find_interactable(hit: Object)` — Recursively searches node tree for Interactable component
-- Interact range: 3 meters (configurable)
-
-**Item Holding System**:
-- Generic `held_item: RigidBody3D` — Supports any physics object
-- `_try_melee()` — Attacks with held item (left click) or performs melee raycast
-- `_drop_item()` — Drops item with forward/upward velocity and reduced gravity
-- `_throw_item()` — Throws held item with force and upward bias
-- Smooth lerp interpolation for pickup animation (snap when close)
-- Smooth hand visibility override (prevents occlusion while holding)
-
-**Animation**:
-- AnimationTree integration for Idle/Hold states
-- Optional debug animation override (H/J keys)
-
-**Viewmodel System**:
-- Separate FPS arm rendering layer (layer 2)
-- Weapon grip bone attachment for held items
-- Independent camera and rendering in SubViewport
-
-**Exports** (organized by category):
-- Movement: walk_speed, sprint_speed, ground_accel, air_accel, jump_velocity
-- Viewmodel: force_hand_visible_when_holding, viewmodel_skeleton_path
-- Look: mouse_sensitivity, max_pitch_degrees
-- Interaction: interact_range, hold_lerp_speed, hold_snap_distance
-- Drop: drop_forward_velocity, drop_up_velocity, drop_gravity_scale
-- Throw: throw_speed, throw_up_bias
-- Animation: anim_tree_path, debug_anim
+**`res://scripts/player/player.gd`** — Full FPS character controller with interaction and holding systems.
+- Movement: walk/sprint with accel, jump, gravity handling on a Capsule CharacterBody3D.
+- Look/input: mouse-look with sensitivity and pitch clamp; Esc toggles mouse capture.
+- Interaction: raycasts `interact_range` meters, finds nearest `Interactable`, updates `InteractPrompt`, and invokes `interact()`.
+- Holding: picks up `RigidBody3D` items, lerps to hand, snaps to `HoldPoint`, supports drop/throw/melee and viewmodel hand visibility override.
+- Animation: drives worldmodel `AnimationTree` (Idle/Hold) with optional debug overrides.
+- Viewmodel: maintains dual-camera setup, weapon grip bone attachment on the FPS arms skeleton.
+- Dependencies: expects AnimationTree at `anim_tree_path`, viewmodel skeleton path, `Interactable` components on targets, and optionally held items exposing `finalize_hold()`/`on_picked_up()`/`on_dropped()` hooks.
 
 ---
 

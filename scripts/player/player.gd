@@ -62,7 +62,7 @@ var anim_playback: AnimationNodeStateMachinePlayback = null
 var _warned_anim_playback_missing := false
 var _was_holding := false
 
-var held_item: RigidBody3D = null
+@export var held_item: RigidBody3D = null
 var _held_snapped := false
 
 ## Returns true if the player is currently holding an item.
@@ -507,7 +507,8 @@ func _try_melee() -> void:
 		print_debug("[Player] _try_melee() hit collider null") # debug
 		return
 	print_debug("[Player] _try_melee() hit: %s" % [hit]) # debug
-
+	
+	# This will be re-written to use the object's own component "damageable.gd"
 	if hit.has_method("apply_damage"):
 		print_debug("[Player] applying damage=1 to %s" % [hit]) # debug
 		hit.call("apply_damage", 1)
