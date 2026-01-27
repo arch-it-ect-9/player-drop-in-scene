@@ -8,6 +8,7 @@
 [sub_resource type="BoxShape3D" id="BoxShape3D_ll0wn"]
 
 [node name="Button" type="StaticBody3D"]
+collision_layer = 8
 script = ExtResource("1_gokab")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]

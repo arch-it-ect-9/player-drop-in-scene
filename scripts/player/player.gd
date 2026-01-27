@@ -64,6 +64,9 @@ var _was_holding := false
 
 @export var held_item: RigidBody3D = null
 var _held_snapped := false
+var _held_holdable: Holdable = null
+var _held_fireable: Fireable = null
+var _held_original_gravity_scale: float = 1.0
 
 ## Returns true if the player is currently holding an item.
 var is_holding: bool:
@@ -81,6 +84,8 @@ func _validate_held_item() -> bool:
 		# Item was destroyed externally - clean up state
 		print_debug("[Player] held_item was destroyed externally, cleaning up state")
 		held_item = null
+		_held_holdable = null
+		_held_fireable = null
 		_held_snapped = false
 		_set_character_hold_state(false)
 		_set_hand_visibility_override(false)
@@ -182,7 +187,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	# Fire (Left click) - attack / use held item (no pickup)
 	if event.is_action_pressed("fire"):
-		_try_melee()
+		_try_fire_or_melee()
 
 	# Look
 	if event is InputEventMouseMotion:
@@ -254,10 +259,18 @@ func _physics_process(delta: float) -> void:
 		# Finalize (snap/reparent) when close enough
 		if curr_xform.origin.distance_to(target_xform.origin) <= hold_snap_distance:
 			# Reparent to hold_point (world-space, follows camera)
-			held_item.reparent(hold_point)
+			held_item.reparent(hold_point, true)
 			held_item.transform = Transform3D.IDENTITY
-			# Finalize the held state on the item (re-stabilize physics)
-			held_item.finalize_hold()
+			
+			# Apply per-item hand tuning from Holdable
+			if _held_holdable != null:
+				held_item.position = _held_holdable.hold_offset
+				held_item.rotation_degrees = _held_holdable.hold_rotation_degrees
+			
+			# Optional backwards compatibility
+			if held_item.has_method("finalize_hold"):
+				held_item.call("finalize_hold")
+			
 			_held_snapped = true
 			# Trigger Hold only once pickup is finalized (snapped into hand)
 			_set_character_hold_state(true)
@@ -399,6 +412,62 @@ func _apply_no_depth_test_to_mesh(mi: MeshInstance3D, enabled: bool) -> void:
 				_saved_surface_materials.erase(key)
 
 
+func _find_owner_rigidbody(from: Node) -> RigidBody3D:
+	var n: Node = from
+	while n != null:
+		if n is RigidBody3D:
+			return n as RigidBody3D
+		n = n.get_parent()
+	return null
+
+
+func _get_holdable(body: RigidBody3D) -> Holdable:
+	return body.get_node_or_null("Holdable") as Holdable
+
+
+func _get_fireable(body: RigidBody3D) -> Fireable:
+	return body.get_node_or_null("Fireable") as Fireable
+
+
+func request_hold(body: RigidBody3D) -> bool:
+	if body == null or not is_instance_valid(body):
+		return false
+	if is_holding:
+		return false
+
+	var holdable := _get_holdable(body)
+	if holdable == null:
+		return false
+	if not holdable.can_hold():
+		return false
+
+	held_item = body
+	_held_holdable = holdable
+	_held_fireable = _get_fireable(body)
+	_held_original_gravity_scale = held_item.gravity_scale
+	_held_snapped = false
+
+	# Stabilize immediately while lerping to HoldPoint
+	held_item.linear_velocity = Vector3.ZERO
+	held_item.angular_velocity = Vector3.ZERO
+
+	# Holdable owns freeze/collisions-off behavior
+	_held_holdable.on_held(self)
+
+	return true
+
+
+func _release_held_item_to(parent: Node, world_xform: Transform3D) -> void:
+	if _held_holdable != null:
+		_held_holdable.on_released(self)
+
+	# Restore original gravity scale unless caller overrides it
+	held_item.gravity_scale = _held_original_gravity_scale
+
+	held_item.reparent(parent, true)
+	held_item.global_transform = world_xform
+
+
 func _drop_item() -> void:
 	if not is_holding or not _validate_held_item():
 		return
@@ -409,8 +478,8 @@ func _drop_item() -> void:
 	# Use hold_point position for drop origin (world-space, tracks with camera)
 	drop_transform.origin = hold_point.global_transform.origin
 
-	# Call the pickup's drop helper which reparents and restores collisions/physics
-	held_item.on_dropped(drop_parent, drop_transform)
+	# Release via Holdable component
+	_release_held_item_to(drop_parent, drop_transform)
 
 	# Give it a light forward toss and lighter gravity so it falls gently
 	var forward := -camera.global_transform.basis.z
@@ -419,6 +488,8 @@ func _drop_item() -> void:
 
 	# Clear held state
 	held_item = null
+	_held_holdable = null
+	_held_fireable = null
 	_held_snapped = false
 	_set_character_hold_state(false)
 	_set_hand_visibility_override(false)
@@ -438,8 +509,8 @@ func _throw_item() -> void:
 	# Use hold_point position for throw origin
 	throw_transform.origin = hold_point.global_transform.origin
 	
-	# Call the pickup's drop helper which reparents and restores collisions/physics
-	held_item.on_dropped(throw_parent, throw_transform)
+	# Release via Holdable component
+	_release_held_item_to(throw_parent, throw_transform)
 	
 	# Calculate throw direction from camera's forward vector
 	var throw_direction := -camera.global_transform.basis.z
@@ -452,6 +523,8 @@ func _throw_item() -> void:
 	
 	# Clear held state
 	held_item = null
+	_held_holdable = null
+	_held_fireable = null
 	_held_snapped = false
 	_set_character_hold_state(false)
 	_set_hand_visibility_override(false)
@@ -466,8 +539,17 @@ func _try_interact() -> void:
 
 	var hit := interact_ray.get_collider()
 	var interactable := _find_interactable(hit)
-	if interactable:
-		interactable.interact(self)
+	if interactable == null:
+		return
+
+	# Keep existing behavior: emit interacted(user)
+	interactable.interact(self)
+
+	# NEW: pickup is handled directly by Player (no bridge script required)
+	if interactable.interaction_type == Interactable.InteractionType.PICKUP:
+		var body := _find_owner_rigidbody(interactable)
+		if body != null:
+			request_hold(body)
 
 func _find_interactable(hit: Object) -> Interactable:
 	if hit is not Node:
@@ -481,6 +563,22 @@ func _find_interactable(hit: Object) -> Interactable:
 		n = n.get_parent()
 
 	return null
+
+
+func _try_fire_or_melee() -> void:
+	if not is_holding or not _validate_held_item():
+		return
+
+	# Prefer Fireable if present + enabled
+	if _held_fireable == null:
+		_held_fireable = _get_fireable(held_item)
+
+	if _held_fireable != null and _held_fireable.is_fireable:
+		if _held_fireable.fire(self):
+			return
+
+	# Fallback: existing melee raycast
+	_try_melee()
 
 
 func _try_melee() -> void:

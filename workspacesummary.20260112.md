@@ -96,13 +96,15 @@ player-drop-in-scene/
 │               └── Button (instance of button.tscn, y=1.426, z=-3.25)
 │
 └── scripts/
-  ├── gameplay/
-  │   ├── interactable.gd                   # class_name Interactable
-  │   ├── target.gd                         # class_name TargetDummy
-  │   └── interactables/
-  │       └── button.gd
-  └── player/
-    └── player.gd                         # Player controller
+    ├── gameplay/
+    │   ├── interactable.gd                   # class_name Interactable
+    │   ├── holdable.gd                       # class_name Holdable
+    │   ├── fireable.gd                       # class_name Fireable
+    │   ├── target.gd                         # class_name TargetDummy
+    │   └── interactables/
+    │       └── button.gd
+    └── player/
+        └── player.gd                         # Player controller
 ```
 
 ### Node Path Reference Quick Guide
@@ -322,29 +324,111 @@ TacoTruckCook_Rig
 ---
 
 ## Scripts
+
 ### Script Catalog
 
-**`res://scripts/gameplay/interactable.gd`** — Component that standardizes interaction prompts and signaling.
-- Defines `InteractionType` enum (USE, PICKUP, EXAMINE, CLOSE, OPEN) with prompt text helpers.
-- Exports toggles for enable/disable and prompt override; emits `interacted(user)` when `interact()` is called.
-- Dependencies: none; consumed by player logic via raycast and by any node that connects to its signal.
+**`res://scripts/gameplay/interactable.gd`** (class_name `Interactable`)
+- **Role**: Component that standardizes interaction prompts and signaling.
+- **Behavior**:
+  - Defines `InteractionType` enum: USE, PICKUP, EXAMINE, CLOSE, OPEN
+  - Exports: `enabled` (bool), `prompt_override` (string), `interaction_type` (enum)
+  - Signal: `interacted(user: Node)` — emitted when `interact(user)` is called
+  - Methods: `get_prompt_text()` returns localized action text, `get_hud_text(key_hint)` formats UI prompt
+- **Signal Usage (Important)**:
+  - `interacted(user)` is **always emitted** when Player presses E on this object
+  - Player **does not wait for or depend on** this signal for pickup
+  - Pickup is decided solely by: `interaction_type == PICKUP` and `request_hold()` succeeding
+  - The signal is intended for:
+    - Item-local logic (sounds, animations, particle effects)
+    - UI feedback and notifications
+    - Puzzle hooks and scene triggers
+    - Custom item-specific behaviors
+- **Dependencies**: None; consumed by player raycast logic and scene-specific handlers via signal connections.
 
-**`res://scripts/gameplay/target.gd`** — Simple destructible dummy.
-- Exports `max_hits`; `apply_damage()` increments hits and frees the node when the limit is reached.
-- Dependencies: none beyond core nodes; instanced by `scenes/gameplay/target.tscn`.
+**`res://scripts/gameplay/holdable.gd`** (class_name `Holdable`)
+- **Role**: Component that controls whether an item can be held and manages hold/release behavior.
+- **Behavior**:
+  - Exports: `is_holdable` (bool), `is_held` (runtime state), `hold_offset` (Vector3), `hold_rotation_degrees` (Vector3)
+  - Exports: `freeze_while_held` (bool), `disable_collisions_while_held` (bool)
+  - Signals: `held(user)`, `released(user)`
+  - Methods:
+    - `can_hold() -> bool` — returns true if holdable and not currently held
+    - `on_held(user)` — freezes physics, disables collisions (if configured), emits signal
+    - `on_released(user)` — restores physics/collisions, emits signal
+    - `get_body() -> RigidBody3D` — returns parent RigidBody3D
+- **Dependencies**: Must be child of a `RigidBody3D`; consumed by `player.gd` via `request_hold()`.
 
-**`res://scripts/gameplay/interactables/button.gd`** — Minimal demo for the interaction system.
-- Receives the `Interactable.interacted` signal and logs which user activated it.
-- Dependencies: requires a sibling `Interactable` node (res://scripts/gameplay/interactable.gd) wired in the scene.
+**`res://scripts/gameplay/fireable.gd`** (class_name `Fireable`)
+- **Role**: Component that controls whether a held item can be fired (used/activated).
+- **Behavior**:
+  - Exports: `is_fireable` (bool), `is_fired` (runtime state), `fire_duration` (float), `cooldown` (float)
+  - Signals: `fired(user)`, `fire_complete`
+  - Methods:
+    - `can_fire() -> bool` — checks fireable flag, fired state, and cooldown timer
+    - `fire(user) -> bool` — attempts to fire, emits `fired(user)`, schedules `fire_complete` after duration
+  - Timing: if `fire_duration > 0`, uses timer before emitting `fire_complete`; cooldown prevents rapid refiring
+- **Firing Gate (Critical)**:
+  - Player calls `fire(user)` **directly** on Left Click
+  - Player **does not** call `can_fire()` separately
+  - `fire(user)` is the **single authoritative gate** that must internally validate:
+    - `is_fireable` flag
+    - cooldown timers
+    - firing state
+  - If `fire(user)` returns `true`, Player will **not** attempt fallback melee
+  - If `fire(user)` returns `false`, Player falls back to melee raycast
+- **Dependencies**: Optional component on `RigidBody3D` items; consumed by `player.gd` via `_try_fire_or_melee()`.
 
-**`res://scripts/player/player.gd`** — Full FPS character controller with interaction and holding systems.
-- Movement: walk/sprint with accel, jump, gravity handling on a Capsule CharacterBody3D.
-- Look/input: mouse-look with sensitivity and pitch clamp; Esc toggles mouse capture.
-- Interaction: raycasts `interact_range` meters, finds nearest `Interactable`, updates `InteractPrompt`, and invokes `interact()`.
-- Holding: picks up `RigidBody3D` items, lerps to hand, snaps to `HoldPoint`, supports drop/throw/melee and viewmodel hand visibility override.
-- Animation: drives worldmodel `AnimationTree` (Idle/Hold) with optional debug overrides.
-- Viewmodel: maintains dual-camera setup, weapon grip bone attachment on the FPS arms skeleton.
-- Dependencies: expects AnimationTree at `anim_tree_path`, viewmodel skeleton path, `Interactable` components on targets, and optionally held items exposing `finalize_hold()`/`on_picked_up()`/`on_dropped()` hooks.
+**`res://scripts/gameplay/target.gd`** (class_name `TargetDummy`)
+- **Role**: Simple destructible dummy for testing melee/damage systems.
+- **Behavior**:
+  - Exports: `max_hits` (int, default 10)
+  - Method: `apply_damage(amount: int)` — increments hit counter, calls `queue_free()` when max reached
+- **Dependencies**: None; instanced by `scenes/gameplay/target.tscn`.
+
+**`res://scripts/gameplay/interactables/button.gd`**
+- **Role**: Minimal demo handler for the interaction system.
+- **Behavior**: Connected to sibling `Interactable.interacted` signal; logs user name to console on activation.
+- **Dependencies**: Requires sibling `Interactable` node; used in `scenes/gameplay/interactables/button.tscn`.
+
+**`res://scripts/player/player.gd`**
+- **Role**: Full FPS character controller with component-based interaction and holding systems.
+- **Behavior**:
+  - **Movement**: Walk/sprint with configurable speeds and acceleration; jump with gravity; CharacterBody3D capsule collider
+  - **Look/Input**: Mouse-look with sensitivity and pitch clamp; Esc toggles mouse capture
+  - **Interaction System**:
+    - Raycasts `interact_range` meters (default 3m) to find `Interactable` components
+    - Updates `InteractPrompt` label with `Interactable.get_hud_text()`
+    - On E key: calls `Interactable.interact(self)`, then checks if `interaction_type == PICKUP` to call `request_hold()`
+    - Helper: `_find_interactable(hit)` recursively searches node tree for Interactable component
+  - **Component-Based Holding System**:
+    - Caches: `_held_holdable`, `_held_fireable`, `_held_original_gravity_scale`
+    - `request_hold(body: RigidBody3D) -> bool` — validates Holdable component via `can_hold()`, stabilizes velocity, calls `Holdable.on_held(self)`
+    - Lerps held item to `HoldPoint`, applies `Holdable.hold_offset` and `hold_rotation_degrees` on snap
+    - `_release_held_item_to(parent, world_xform)` — calls `Holdable.on_released(self)`, restores gravity scale
+    - `_validate_held_item()` — cleans up all cached refs if item destroyed externally
+  - **Drop/Throw**:
+    - Q key: `_drop_item()` releases via Holdable component, applies light forward velocity and reduced gravity
+    - Right click: `_throw_item()` releases via Holdable component, applies throw velocity with upward bias
+  - **Fire System**:
+    - Left click: `_try_fire_or_melee()` — prefers `Fireable.fire(self)` if component present and enabled, else falls back to melee raycast
+    - Melee: raycasts 2m, calls `apply_damage(1)` on hit if method exists
+  - **Animation**: Drives worldmodel `AnimationTree` (Idle/Hold states); debug overrides with H/J keys
+  - **Viewmodel**: Maintains dual-camera setup; creates `BoneAttachment3D` for `weapon_grip` bone on FPS arms skeleton
+  - **Hand Visibility Override**: Disables depth test on worldmodel materials when holding (prevents hand occlusion)
+- **Exports** (organized by category):
+  - Movement: walk_speed, sprint_speed, ground_accel, air_accel, jump_velocity
+  - Viewmodel: force_hand_visible_when_holding, viewmodel_skeleton_path, right_hand_socket_path
+  - Look: mouse_sensitivity, max_pitch_degrees
+  - Interaction: interact_range, hold_lerp_speed, hold_snap_distance
+  - Drop: drop_forward_velocity, drop_up_velocity, drop_gravity_scale
+  - Throw: throw_speed, throw_up_bias
+  - Animation: anim_tree_path, debug_anim
+- **Dependencies**:
+  - Expects `Interactable` components on interactive objects (finds via `_find_interactable()`)
+  - Expects `Holdable` component on pickupable items (required for `request_hold()` to succeed)
+  - Optional `Fireable` component on held items (checked in `_try_fire_or_melee()`)
+  - Expects AnimationTree at `anim_tree_path` with Idle/Hold states
+  - Expects viewmodel skeleton at `viewmodel_skeleton_path` with `weapon_grip` bone
 
 ---
 
@@ -364,10 +448,114 @@ The project uses a **dual-camera viewmodel system** to prevent weapon/arm clippi
 
 ---
 
+## Component System Contract
+
+This section documents the **authoritative design contract** for the component-based interaction system.
+
+---
+
+### ❌ Deprecated / Legacy Hooks (DO NOT USE)
+
+The following methods are **no longer part of the official contract**:
+- `finalize_hold()`
+- `on_picked_up()`
+- `on_dropped(parent, transform)`
+
+These may exist on older items for backwards compatibility only. **New items must not implement or rely on these methods.**
+
+```gdscript
+# ❌ DEPRECATED - DO NOT USE
+func on_picked_up(player): pass
+func on_dropped(parent, transform): pass
+```
+
+---
+
+### ✅ Player Authority Rules
+
+`player.gd` is the **sole authority** for:
+- Setting and clearing `held_item`
+- Reparenting held items
+- Applying drop/throw velocities
+- Routing input to components
+
+**Items and components must not directly mutate `player.held_item`.**
+
+---
+
+### Scene Structure Requirements
+
+**Required structure for interactive items:**
+
+```
+ItemRoot (RigidBody3D)
+├─ MeshInstance3D
+├─ CollisionShape3D
+├─ Interactable   (Node, script=interactable.gd)
+├─ Holdable       (Node, script=holdable.gd)
+└─ Fireable       (Node, script=fireable.gd)   # optional
+```
+
+**Critical: Node Naming Convention**
+- Player locates components by **exact node name**, not by type
+- Required names (case-sensitive):
+  - `Interactable`
+  - `Holdable`
+  - `Fireable`
+- Renaming (e.g., "HoldableComponent") will **break discovery**
+- Future versions may support type-based lookup
+
+**Component Parenting:**
+- All components must be **direct children** of the root RigidBody3D
+- Components control behavior, not state
+- Use component signals (`held`, `released`, `fired`, `fire_complete`) for custom logic
+
+---
+
+### Item Authoring Checklist
+
+Use these checklists when creating new interactive items.
+
+#### Pickup-Capable Item
+
+```
+✓ Root node is RigidBody3D
+✓ Child node named "Interactable" exists
+✓ Interactable.interaction_type == PICKUP
+✓ Child node named "Holdable" exists
+✓ Holdable.is_holdable == true
+✓ Item collision_layer matches InteractRay collision_mask (layer bit 4)
+```
+
+#### Fire-Capable Item
+
+```
+✓ Meets all pickup requirements above
+✓ Child node named "Fireable" exists
+✓ Fireable.is_fireable == true
+✓ Fireable.fire(user) handles all internal validation
+```
+
+#### Common Failure Cases
+
+**Item won't pick up:**
+- Interactable.interaction_type not set to PICKUP
+- Component node renamed or nested incorrectly
+- Item collision layer mismatch with InteractRay
+
+**Item won't fire:**
+- `is_fireable == false`
+- `fire(user)` returns false (check cooldowns/state)
+- Fireable not named exactly "Fireable"
+
+**Legacy warning:** Items implementing `on_picked_up()` or `on_dropped()` will not work. Use `Holdable.on_held()` and `Holdable.on_released()` instead.
+
+---
+
 ## Notes
 
 - Character model is "Taco Truck Cook" — a stylized humanoid rig from Blender
 - The AnimationTree on the worldmodel supports idle/hold states for item holding animations
 - The interaction system is fully component-based: add an `Interactable` node to any object and connect to its `interacted` signal
-- The holding system is generic and works with any `RigidBody3D` — implement `on_picked_up()` and `on_dropped()` methods for custom pickup behavior
+- The holding system uses `Holdable`, `Fireable`, and `Interactable` components for all item behavior
 - Project is designed as a reusable drop-in player scene for other Godot projects
