@@ -45,6 +45,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.06, 0, -10.825)
 
 [node name="Button" parent="." instance=ExtResource("4_v45ci")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4265382, -3.2501435)
+collision_layer = 9
 
 [node name="RigidBody3D" parent="." instance=ExtResource("4_48ne7")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.68385, -5.6174827)

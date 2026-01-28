@@ -16,5 +16,10 @@ bones/4/rotation = Quaternion(-0.5831056, -0.13889396, 0.013969269, 0.80031323)
 layers = 2
 cast_shadow = 0
 
+[node name="HoldPoint" type="BoneAttachment3D" parent="Armature/Skeleton3D" index="1"]
+transform = Transform3D(0.96061456, 0.24401617, 0.1329496, -0.277884, 0.8435371, 0.45959285, 1.6569538e-07, -0.4784361, 0.8781223, -0.08937885, -0.09187315, 0.69778764)
+bone_name = "weapon_grip"
+bone_idx = 6
+
 [node name="AnimationPlayer" parent="." index="1"]
 autoplay = "idle_unarmed"

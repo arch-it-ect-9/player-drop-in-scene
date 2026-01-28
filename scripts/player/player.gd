@@ -13,11 +13,6 @@ extends CharacterBody3D
 
 @export_category("Viewmodel")
 @export var force_hand_visible_when_holding := true
-# Path to the viewmodel skeleton for weapon_grip bone attachment
-@export var viewmodel_skeleton_path: NodePath = NodePath("HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelRoot_VM/fps_viewmodel_arms/Armature/Skeleton3D")
-@onready var viewmodel_skeleton: Skeleton3D = null
-var viewmodel_weapon_grip_attachment: BoneAttachment3D = null
-const WEAPON_GRIP_BONE_NAME := "weapon_grip"
 
 const _RIGHT_HAND_SOCKET_FALLBACK_PATH := NodePath("Visuals/TacoTruckCookVisual/Model/TacoTruckCook_Rig/Skeleton3D/BoneAttachment3D")
 const _MODEL_ROOT_PATH := NodePath("Visuals/TacoTruckCookVisual/Model")
@@ -26,6 +21,9 @@ const _MODEL_ROOT_PATH := NodePath("Visuals/TacoTruckCookVisual/Model")
 # when holding (so the raised hand doesn't get occluded by the body).
 # Key: "<mesh_instance_id>:<surface_idx>" -> Material (can be null)
 var _saved_surface_materials: Dictionary = {}
+
+# Held-item visibility layer save/restore (per VisualInstance3D instance_id)
+var _held_saved_visibility_layers: Dictionary = {}
 
 @export_category("Look")
 @export var mouse_sensitivity := 0.0022
@@ -53,9 +51,18 @@ var _saved_surface_materials: Dictionary = {}
 @onready var camera: Camera3D = $Head/WorldCamera
 @onready var interact_ray: RayCast3D = $Head/InteractRay
 @onready var interact_prompt: Label = $HUD/InteractPrompt
-@onready var hold_point: Marker3D = $Head/HoldPoint
+@onready var hold_point: BoneAttachment3D = $HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelRoot_VM/fps_viewmodel_arms/Armature/Skeleton3D/HoldPoint
+@onready var viewmodel_camera: Camera3D = $HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelCamera_VM
+@onready var viewmodel_arms_mesh: VisualInstance3D = (
+	$HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelRoot_VM/fps_viewmodel_arms/Armature/Skeleton3D/fps_viewmodel_arms
+	as VisualInstance3D
+)
 @onready var hud: CanvasLayer = $HUD
 @onready var crosshair: Control = $HUD/Crosshair
+
+# World-space anchor we can parent physics items to.
+# We drive this from the viewmodel HoldPoint pose each frame.
+var hold_anchor: Node3D = null
 
 @onready var anim_tree: AnimationTree = get_node_or_null(anim_tree_path) as AnimationTree
 var anim_playback: AnimationNodeStateMachinePlayback = null
@@ -83,6 +90,8 @@ func _validate_held_item() -> bool:
 	if not is_instance_valid(held_item):
 		# Item was destroyed externally - clean up state
 		print_debug("[Player] held_item was destroyed externally, cleaning up state")
+		# Best effort: if we had overridden visibility layers, clear our cache.
+		_held_saved_visibility_layers.clear()
 		held_item = null
 		_held_holdable = null
 		_held_fireable = null
@@ -131,9 +140,24 @@ func _ready() -> void:
 
 	# Resolve the hand socket (BoneAttachment3D) now that the scene is ready.
 	_resolve_right_hand_socket()
-	
-	# Setup viewmodel weapon_grip bone attachment for held items
-	_setup_viewmodel_weapon_grip()
+
+	# Create (or reuse) a world-space hold anchor under the head.
+	# We cannot parent world physics items to the viewmodel HoldPoint because it lives in a SubViewport (different World3D).
+	var existing_anchor := head.get_node_or_null("HoldAnchor") as Node3D
+	if existing_anchor != null:
+		hold_anchor = existing_anchor
+	else:
+		hold_anchor = Node3D.new()
+		hold_anchor.name = "HoldAnchor"
+		head.add_child(hold_anchor)
+
+	# Initial placement so we don't snap to origin on first frame.
+	_update_hold_anchor_from_viewmodel()
+
+
+func _process(_delta: float) -> void:
+	# Keep the anchor visually stable even when render FPS > physics FPS.
+	_update_hold_anchor_from_viewmodel()
 
 
 func _set_character_hold_state(should_hold: bool, force: bool = false) -> void:
@@ -204,6 +228,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	_update_hold_anchor_from_viewmodel()
 	_update_interact_prompt()
 	
 	var _frame_start_usec := Time.get_ticks_usec() # debug
@@ -244,9 +269,7 @@ func _physics_process(delta: float) -> void:
 	if is_holding and _validate_held_item() and not _held_snapped:
 		var t: float = clampf(hold_lerp_speed * delta, 0.0, 1.0)
 		var curr_xform: Transform3D = Transform3D(held_item.global_transform.basis, held_item.global_transform.origin)
-
-		var target_node: Node3D = _get_hold_target()
-		var target_xform: Transform3D = Transform3D(target_node.global_transform.basis, target_node.global_transform.origin)
+		var target_xform: Transform3D = Transform3D(hold_anchor.global_transform.basis, hold_anchor.global_transform.origin)
 
 		# Position lerp
 		curr_xform.origin = curr_xform.origin.lerp(target_xform.origin, t)
@@ -258,14 +281,18 @@ func _physics_process(delta: float) -> void:
 
 		# Finalize (snap/reparent) when close enough
 		if curr_xform.origin.distance_to(target_xform.origin) <= hold_snap_distance:
-			# Reparent to hold_point (world-space, follows camera)
-			held_item.reparent(hold_point, true)
+			# Reparent to viewmodel HoldPoint. This lives in the SubViewport world and is used for rendering.
+			# Use keep_global=false to avoid cross-World3D global-transform issues.
+			held_item.reparent(hold_point, false)
 			held_item.transform = Transform3D.IDENTITY
 			
 			# Apply per-item hand tuning from Holdable
 			if _held_holdable != null:
 				held_item.position = _held_holdable.hold_offset
 				held_item.rotation_degrees = _held_holdable.hold_rotation_degrees
+			
+			# Ensure held item renders in the viewmodel SubViewport by matching layer mask.
+			_apply_viewmodel_visibility_layers(held_item)
 			
 			# Optional backwards compatibility
 			if held_item.has_method("finalize_hold"):
@@ -332,34 +359,67 @@ func _resolve_right_hand_socket() -> void:
 		print_debug("[Player] Right-hand socket resolved -> %s" % [right_hand_socket.get_path()])
 
 
-func _get_hold_target() -> Node3D:
-	# Use hold_point for world-space items. The viewmodel weapon_grip is inside a SubViewport
-	# and has a different coordinate system - it's only for rendering FPS weapon models.
-	# hold_point is in the main scene tree and tracks with the camera properly.
-	return hold_point
+func _update_hold_anchor_from_viewmodel() -> void:
+	if hold_anchor == null:
+		return
+	if camera == null:
+		return
+	if hold_point == null or viewmodel_camera == null:
+		# Fallback: keep the anchor in front of the main camera.
+		# (Useful if the viewmodel is missing in a stripped-down scene.)
+		var fallback := camera.global_transform
+		fallback.origin += -camera.global_transform.basis.z * 1.0
+		hold_anchor.global_transform = fallback
+		return
+
+	# Compute the HoldPoint pose relative to the viewmodel camera, then apply that relative pose to the main camera.
+	# This maps from the SubViewport World3D into the main World3D.
+	var rel_full: Transform3D = viewmodel_camera.global_transform.affine_inverse() * hold_point.global_transform
+	# IMPORTANT: the viewmodel root uses scaling/mirroring; discard scale/reflection and keep only a pure rotation.
+	var rel := Transform3D(Basis(rel_full.basis.get_rotation_quaternion()), rel_full.origin)
+	hold_anchor.global_transform = camera.global_transform * rel
 
 
-func _setup_viewmodel_weapon_grip() -> void:
-	# Get the viewmodel skeleton
-	viewmodel_skeleton = get_node_or_null(viewmodel_skeleton_path) as Skeleton3D
-	if viewmodel_skeleton == null:
-		push_warning("[Player] Viewmodel skeleton not found at path: %s" % [String(viewmodel_skeleton_path)])
+func _apply_viewmodel_visibility_layers(item_root: Node) -> void:
+	_held_saved_visibility_layers.clear()
+
+	if viewmodel_arms_mesh == null:
+		push_warning("[Player] viewmodel_arms_mesh is null; cannot copy layers.")
 		return
-	
-	# Find the weapon_grip bone index
-	var bone_idx := viewmodel_skeleton.find_bone(WEAPON_GRIP_BONE_NAME)
-	if bone_idx == -1:
-		push_warning("[Player] Bone '%s' not found in viewmodel skeleton" % [WEAPON_GRIP_BONE_NAME])
+
+	var target_mask: int = viewmodel_arms_mesh.layers
+	_save_and_set_visibility_recursive(item_root, target_mask)
+
+
+func _save_and_set_visibility_recursive(n: Node, target_mask: int) -> void:
+	if n is VisualInstance3D:
+		var v := n as VisualInstance3D
+		var id := v.get_instance_id()
+		if not _held_saved_visibility_layers.has(id):
+			_held_saved_visibility_layers[id] = v.layers
+		v.layers = target_mask
+
+	for c in n.get_children():
+		_save_and_set_visibility_recursive(c, target_mask)
+
+
+func _restore_viewmodel_visibility_layers(item_root: Node) -> void:
+	if _held_saved_visibility_layers.is_empty():
 		return
-	
-	# Create a BoneAttachment3D for the weapon_grip bone
-	viewmodel_weapon_grip_attachment = BoneAttachment3D.new()
-	viewmodel_weapon_grip_attachment.name = "WeaponGripAttachment"
-	viewmodel_weapon_grip_attachment.bone_name = WEAPON_GRIP_BONE_NAME
-	viewmodel_weapon_grip_attachment.bone_idx = bone_idx
-	viewmodel_skeleton.add_child(viewmodel_weapon_grip_attachment)
-	
-	print_debug("[Player] Viewmodel weapon_grip attachment created at bone index %d" % [bone_idx])
+
+	_restore_visibility_recursive(item_root)
+	_held_saved_visibility_layers.clear()
+
+
+func _restore_visibility_recursive(n: Node) -> void:
+	if n is VisualInstance3D:
+		var v := n as VisualInstance3D
+		var id := v.get_instance_id()
+		if _held_saved_visibility_layers.has(id):
+			v.layers = int(_held_saved_visibility_layers[id])
+
+	for c in n.get_children():
+		_restore_visibility_recursive(c)
 
 
 func _set_hand_visibility_override(enabled: bool) -> void:
@@ -452,14 +512,20 @@ func request_hold(body: RigidBody3D) -> bool:
 	held_item.angular_velocity = Vector3.ZERO
 
 	# Holdable owns freeze/collisions-off behavior
-	_held_holdable.on_held(self)
+	_held_holdable.on_held(self )
 
 	return true
 
 
 func _release_held_item_to(parent: Node, world_xform: Transform3D) -> void:
+	if held_item == null or not is_instance_valid(held_item):
+		return
+
+	# Restore visibility layers before moving back to the world.
+	_restore_viewmodel_visibility_layers(held_item)
+
 	if _held_holdable != null:
-		_held_holdable.on_released(self)
+		_held_holdable.on_released(self )
 
 	# Restore original gravity scale unless caller overrides it
 	held_item.gravity_scale = _held_original_gravity_scale
@@ -474,9 +540,8 @@ func _drop_item() -> void:
 
 	# Parent to the current scene root (world)
 	var drop_parent: Node = get_tree().get_current_scene() if get_tree().get_current_scene() != null else get_parent()
-	var drop_transform: Transform3D = held_item.global_transform
-	# Use hold_point position for drop origin (world-space, tracks with camera)
-	drop_transform.origin = hold_point.global_transform.origin
+	# Build a world-space transform from the hold anchor (the held item may currently be in the SubViewport world).
+	var drop_transform: Transform3D = hold_anchor.global_transform
 
 	# Release via Holdable component
 	_release_held_item_to(drop_parent, drop_transform)
@@ -505,9 +570,8 @@ func _throw_item() -> void:
 	
 	# Parent to the current scene root (world)
 	var throw_parent: Node = get_tree().get_current_scene() if get_tree().get_current_scene() != null else get_parent()
-	var throw_transform: Transform3D = held_item.global_transform
-	# Use hold_point position for throw origin
-	throw_transform.origin = hold_point.global_transform.origin
+	# Build a world-space transform from the hold anchor (the held item may currently be in the SubViewport world).
+	var throw_transform: Transform3D = hold_anchor.global_transform
 	
 	# Release via Holdable component
 	_release_held_item_to(throw_parent, throw_transform)
@@ -543,7 +607,7 @@ func _try_interact() -> void:
 		return
 
 	# Keep existing behavior: emit interacted(user)
-	interactable.interact(self)
+	interactable.interact(self )
 
 	# NEW: pickup is handled directly by Player (no bridge script required)
 	if interactable.interaction_type == Interactable.InteractionType.PICKUP:
@@ -574,7 +638,7 @@ func _try_fire_or_melee() -> void:
 		_held_fireable = _get_fireable(held_item)
 
 	if _held_fireable != null and _held_fireable.is_fireable:
-		if _held_fireable.fire(self):
+		if _held_fireable.fire(self ):
 			return
 
 	# Fallback: existing melee raycast
@@ -593,7 +657,7 @@ func _try_melee() -> void:
 
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.exclude = [self, held_item]
+	query.exclude = [ self , held_item]
 	var result := space.intersect_ray(query)
 
 	if result.is_empty():

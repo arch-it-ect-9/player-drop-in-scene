@@ -32,7 +32,8 @@ player-drop-in-scene/
 │   │       │       └── fps_viewmodel_arms (instance of .glb)
 │   │       │           ├── Armature
 │   │       │           │   └── Skeleton3D
-│   │       │           │       └── fps_viewmodel_arms (MeshInstance3D, layers=2, cast_shadow=0)
+│   │       │           │       ├── fps_viewmodel_arms (MeshInstance3D, layers=2, cast_shadow=0)
+│   │       │           │       └── HoldPoint (BoneAttachment3D, bone_name="weapon_grip", bone_idx=6)
 │   │       │           └── AnimationPlayer (autoplay="idle_unarmed")
 │   │       │
 │   │       └── worldmodel/
@@ -55,9 +56,8 @@ player-drop-in-scene/
 │   │               ├── CollisionShape3D (CapsuleShape3D r=0.35 h=1.4, y=0.763)
 │   │               ├── Head (Node3D, y=1.4, z=-0.186)
 │   │               │   ├── WorldCamera (Camera3D, cull_mask=1, current=true)
-│   │               │   │   └── HandTarget (Marker3D, x=0.219 y=-0.285 z=-0.417)
-│   │               │   ├── InteractRay (RayCast3D, target=Vector3(0,0,-3), collision_mask=4)
-│   │               │   └── HoldPoint (Marker3D, rotated, x=0.33 y=-0.135 z=-1.145)
+│   │               │   ├── InteractRay (RayCast3D, target=Vector3(0,0,-3), collision_mask=8)
+│   │               │   └── HoldAnchor (Node3D, runtime; created by player.gd)
 │   │               ├── HUD (CanvasLayer)
 │   │               │   ├── Crosshair (TextureRect, 16×16, centered)
 │   │               │   │   └── ColorRect (4×4 white square)
@@ -114,9 +114,9 @@ From `player.gd` (attached to Player node):
 |------|------------------|
 | Head | `$Head` |
 | WorldCamera | `$Head/WorldCamera` |
-| HandTarget | `$Head/WorldCamera/HandTarget` |
 | InteractRay | `$Head/InteractRay` |
-| HoldPoint | `$Head/HoldPoint` |
+| HoldAnchor | `$Head/HoldAnchor` (runtime; created by player.gd) |
+| HoldPoint | `$HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelRoot_VM/fps_viewmodel_arms/Armature/Skeleton3D/HoldPoint` |
 | InteractPrompt | `$HUD/InteractPrompt` |
 | Crosshair | `$HUD/Crosshair` |
 | ViewModelViewport | `$HUD/ViewModelViewportContainer/ViewModelViewport` |
@@ -161,9 +161,8 @@ First-person CharacterBody3D player with:
 - **CollisionShape3D** — Capsule (radius 0.35, height 1.4)
 - **Head** (Node3D at y=1.4)
   - **WorldCamera** — Main camera, cull_mask=1 (excludes viewmodel layer)
-  - **HandTarget** — Marker3D for hand IK positioning
-  - **InteractRay** — RayCast3D, 3m range, collision_mask=4 (interactables layer)
-  - **HoldPoint** — Marker3D for held object placement (rotated for natural hold pose)
+  - **InteractRay** — RayCast3D, 3m range, collision_mask=8 (interactables layer)
+  - **HoldAnchor** — Runtime Node3D created by `player.gd` (world-space hold/drop/throw origin)
 - **HUD** (CanvasLayer)
   - **Crosshair** — Centered 16×16 white square
   - **InteractPrompt** — Centered label that shows nearby interactable prompts
@@ -171,6 +170,7 @@ First-person CharacterBody3D player with:
     - Separate rendering layer for first-person arms
     - **ViewModelCamera_VM** — cull_mask=2, FOV=30°
     - **ViewModelRoot_VM** → **fps_viewmodel_arms** instance
+      - **HoldPoint** — BoneAttachment3D inside `fps_viewmodel_arms.tscn` (bone_name=`weapon_grip`)
 - **Visuals** → **TacoTruckCookVisual** — Third-person world model (for multiplayer/mirrors)
 
 ### `scenes/gameplay/interactables/button.tscn`
@@ -194,6 +194,7 @@ First-person arm model imported from Blender (`fps_viewmodel_arms.glb`). Feature
 - Render layer 2 (viewmodel-only layer)
 - Shadow casting disabled (`cast_shadow = 0`)
 - Skeleton with bone pose adjustments for FPS positioning
+- `HoldPoint` BoneAttachment3D under `Armature/Skeleton3D` (bone_name=`weapon_grip`) used as the Player's snap target
 - Autoplay animation: `idle_unarmed`
 
 #### Viewmodel glTF Reference (`fps_viewmodel_arms.gltf`)
@@ -403,21 +404,23 @@ TacoTruckCook_Rig
   - **Component-Based Holding System**:
     - Caches: `_held_holdable`, `_held_fireable`, `_held_original_gravity_scale`
     - `request_hold(body: RigidBody3D) -> bool` — validates Holdable component via `can_hold()`, stabilizes velocity, calls `Holdable.on_held(self)`
-    - Lerps held item to `HoldPoint`, applies `Holdable.hold_offset` and `hold_rotation_degrees` on snap
-    - `_release_held_item_to(parent, world_xform)` — calls `Holdable.on_released(self)`, restores gravity scale
+    - Maintains a runtime world-space `HoldAnchor` (under `$Head`) driven from the viewmodel `HoldPoint` pose
+    - Lerps held item toward `HoldAnchor` in world-space; when close, reparents to viewmodel `HoldPoint` (with `keep_global=false`) and applies `Holdable.hold_offset` + `hold_rotation_degrees`
+    - While held, saves and overrides `VisualInstance3D.layers` recursively to match the viewmodel arms layer; restores original layers on release
+    - `_release_held_item_to(parent, world_xform)` — restores visibility layers, calls `Holdable.on_released(self)`, restores gravity scale
     - `_validate_held_item()` — cleans up all cached refs if item destroyed externally
   - **Drop/Throw**:
-    - Q key: `_drop_item()` releases via Holdable component, applies light forward velocity and reduced gravity
-    - Right click: `_throw_item()` releases via Holdable component, applies throw velocity with upward bias
+    - Q key: `_drop_item()` releases via Holdable component; uses `HoldAnchor` as the world drop origin; applies light forward velocity and reduced gravity
+    - Right click: `_throw_item()` releases via Holdable component; uses `HoldAnchor` as the world throw origin; applies throw velocity with upward bias
   - **Fire System**:
     - Left click: `_try_fire_or_melee()` — prefers `Fireable.fire(self)` if component present and enabled, else falls back to melee raycast
     - Melee: raycasts 2m, calls `apply_damage(1)` on hit if method exists
   - **Animation**: Drives worldmodel `AnimationTree` (Idle/Hold states); debug overrides with H/J keys
-  - **Viewmodel**: Maintains dual-camera setup; creates `BoneAttachment3D` for `weapon_grip` bone on FPS arms skeleton
+  - **Viewmodel**: Maintains dual-camera setup; uses `HoldPoint` (BoneAttachment3D) in `fps_viewmodel_arms.tscn` (bone_name=`weapon_grip`) as the snap target
   - **Hand Visibility Override**: Disables depth test on worldmodel materials when holding (prevents hand occlusion)
 - **Exports** (organized by category):
   - Movement: walk_speed, sprint_speed, ground_accel, air_accel, jump_velocity
-  - Viewmodel: force_hand_visible_when_holding, viewmodel_skeleton_path, right_hand_socket_path
+  - Viewmodel: force_hand_visible_when_holding, right_hand_socket_path
   - Look: mouse_sensitivity, max_pitch_degrees
   - Interaction: interact_range, hold_lerp_speed, hold_snap_distance
   - Drop: drop_forward_velocity, drop_up_velocity, drop_gravity_scale
@@ -428,7 +431,7 @@ TacoTruckCook_Rig
   - Expects `Holdable` component on pickupable items (required for `request_hold()` to succeed)
   - Optional `Fireable` component on held items (checked in `_try_fire_or_melee()`)
   - Expects AnimationTree at `anim_tree_path` with Idle/Hold states
-  - Expects viewmodel skeleton at `viewmodel_skeleton_path` with `weapon_grip` bone
+  - Expects the viewmodel `HoldPoint` BoneAttachment3D at `$HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelRoot_VM/fps_viewmodel_arms/Armature/Skeleton3D/HoldPoint` (bone_name=`weapon_grip`)
 
 ---
 
@@ -524,7 +527,7 @@ Use these checklists when creating new interactive items.
 ✓ Interactable.interaction_type == PICKUP
 ✓ Child node named "Holdable" exists
 ✓ Holdable.is_holdable == true
-✓ Item collision_layer matches InteractRay collision_mask (layer bit 4)
+✓ Item collision_layer matches InteractRay collision_mask (layer 4 ⇒ mask 8)
 ```
 
 #### Fire-Capable Item

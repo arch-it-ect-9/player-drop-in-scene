@@ -23,16 +23,10 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, -0.18575372)
 cull_mask = 1
 current = true
 
-[node name="HandTarget" type="Marker3D" parent="Head/WorldCamera"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.21892929, -0.28544313, -0.41738895)
-
 [node name="InteractRay" type="RayCast3D" parent="Head"]
 exclude_parent = false
 target_position = Vector3(0, 0, -3)
 collision_mask = 8
-
-[node name="HoldPoint" type="Marker3D" parent="Head"]
-transform = Transform3D(0.9547608, 0.11619362, 0.27373502, 0, 0.92050487, -0.39073113, -0.29737487, 0.37305477, 0.87886196, 0.33, -0.135, -1.145)
 
 [node name="HUD" type="CanvasLayer" parent="."]
 
@@ -108,3 +102,5 @@ vertical_alignment = 1
 [node name="Visuals" type="Node3D" parent="."]
 
 [node name="TacoTruckCookVisual" parent="Visuals" instance=ExtResource("2_onrkg")]
+
+[editable path="HUD/ViewModelViewportContainer/ViewModelViewport/ViewModelWorld/ViewModelRoot_VM/fps_viewmodel_arms"]
